@@ -1,133 +1,224 @@
 import random
 from collections import deque
+from dataclasses import dataclass
+from typing import Optional, List, Set, Dict
+import numpy as np
 
-# Define a router class to simulate processing units in wafer-scale NoC
+@dataclass
+class Packet:
+    """Represents a data packet in the network."""
+    source_id: int
+    destination_id: int
+    creation_time: int
+    size: int
+    priority: int = 0
+    current_hop_count: int = 0
+
 class Router:
-    def __init__(self, router_id, latency=1):
+    """Enhanced router class with power and thermal modeling."""
+    def __init__(self, router_id: int, latency: int = 1):
         self.router_id = router_id
         self.latency = latency
-        self.east_port = None
-        self.west_port = None
-        self.north_port = None
-        self.south_port = None
-        self.up_port = None
-        self.down_port = None
-        self.failed = False  # Flag to indicate if the router has failed
+        self.ports: Dict[str, Optional['Link']] = {
+            'east': None, 'west': None,
+            'north': None, 'south': None,
+            'up': None, 'down': None
+        }
+        self.failed = False
+        self.buffer_size = 64  # Buffer size in packets
+        self.current_buffer_usage = 0
+        self.temperature = 25.0  # Initial temperature in Celsius
+        self.power_consumption = 0.0  # Power consumption in Watts
+        self.packet_queue = deque()
+        
+    def update_thermal_model(self, ambient_temp: float, neighboring_temps: List[float]):
+        """Update router temperature based on power consumption and neighboring temperatures."""
+        thermal_conductivity = 0.5
+        self.temperature = (self.temperature + 
+                          thermal_conductivity * (sum(neighboring_temps) / len(neighboring_temps) - self.temperature) +
+                          self.power_consumption * 0.1)  # Simplified thermal model
+        
+    def process_packet(self, packet: Packet) -> bool:
+        """Process a packet and update power consumption."""
+        if self.current_buffer_usage >= self.buffer_size:
+            return False
+        
+        self.packet_queue.append(packet)
+        self.current_buffer_usage += 1
+        self.power_consumption += 0.1 * packet.size  # Simplified power model
+        return True
 
-# Define a simple link class to simulate links between routers
 class Link:
-    def __init__(self, link_id, latency=1):
+    """Enhanced link class with bandwidth and congestion modeling."""
+    def __init__(self, link_id: int, latency: int = 1, bandwidth: float = 1.0):
         self.link_id = link_id
         self.latency = latency
-        self.failed = False  # Flag to indicate if the link has failed
+        self.bandwidth = bandwidth  # GB/s
+        self.utilization = 0.0
+        self.failed = False
+        self.current_load = 0
+        
+    def can_transmit(self, packet_size: int) -> bool:
+        """Check if link can handle additional transmission."""
+        return (self.current_load + packet_size) <= (self.bandwidth * 1024)  # Convert to MB
 
-# Define the 3D mesh topology with fault tolerance
 class Wafer3DMeshTopology:
-    def __init__(self, num_rows, num_cols, num_layers, link_latency, router_latency, fault_probability=0.1):
-        self.num_rows = num_rows  # Number of rows in X direction
-        self.num_cols = num_cols  # Number of columns in Y direction
-        self.num_layers = num_layers  # Number of layers in Z direction
+    def __init__(self, num_rows: int, num_cols: int, num_layers: int,
+                 link_latency: int, router_latency: int, fault_probability: float = 0.1):
+        self.num_rows = num_rows
+        self.num_cols = num_cols
+        self.num_layers = num_layers
         self.link_latency = link_latency
         self.router_latency = router_latency
-        self.fault_probability = fault_probability  # Probability of faults in routers or links
-
-    def createTopology(self):
+        self.fault_probability = fault_probability
+        self.clock_cycle = 0
+        self.total_packets_sent = 0
+        self.total_packets_dropped = 0
+        
+    def createTopology(self) -> tuple[List[Router], List[Link]]:
+        """Create topology with enhanced fault injection and monitoring."""
         total_routers = self.num_rows * self.num_cols * self.num_layers
-        routers = [Router(router_id=i, latency=self.router_latency) for i in range(total_routers)]
+        routers = [Router(router_id=i, latency=self.router_latency) 
+                  for i in range(total_routers)]
         links = []
-
-        # Create mesh connections with fault injection
+        
+        # Create mesh connections with realistic fault modeling
         for z in range(self.num_layers):
             for y in range(self.num_cols):
                 for x in range(self.num_rows):
-                    idx = z * (self.num_rows * self.num_cols) + y * self.num_rows + x
+                    idx = self._get_router_index(x, y, z)
                     router = routers[idx]
-
-                    # Connect east neighbor if it exists
-                    if (x < self.num_rows - 1):
-                        east_idx = idx + 1
-                        if random.random() > self.fault_probability:
-                            east_link = Link(link_id=idx, latency=self.link_latency)
-                            router.east_port = east_link
-                            routers[east_idx].west_port = east_link
-                            links.append(east_link)
-                        else:
-                            print(f"Fault injected: East link at router {idx} failed")
-
-                    # Connect south neighbor if it exists
-                    if (y < self.num_cols - 1):
-                        south_idx = idx + self.num_rows
-                        if random.random() > self.fault_probability:
-                            south_link = Link(link_id=idx, latency=self.link_latency)
-                            router.south_port = south_link
-                            routers[south_idx].north_port = south_link
-                            links.append(south_link)
-                        else:
-                            print(f"Fault injected: South link at router {idx} failed")
-
-                    # Connect down neighbor if it exists
-                    if (z < self.num_layers - 1):
-                        down_idx = idx + (self.num_rows * self.num_cols)
-                        if random.random() > self.fault_probability:
-                            down_link = Link(link_id=idx, latency=self.link_latency)
-                            router.down_port = down_link
-                            routers[down_idx].up_port = down_link
-                            links.append(down_link)
-                        else:
-                            print(f"Fault injected: Down link at router {idx} failed")
-
+                    
+                    # Connect neighbors with variable bandwidth based on distance
+                    self._connect_neighbors(router, routers, links, x, y, z)
+                    
         return routers, links
-
-    def find_backup_route(self, src_router, dst_router):
-        """Implements a simple Breadth-First Search (BFS) to find a backup route."""
-        queue = deque([src_router])
+    
+    def _get_router_index(self, x: int, y: int, z: int) -> int:
+        """Calculate router index from coordinates."""
+        return z * (self.num_rows * self.num_cols) + y * self.num_rows + x
+    
+    def _connect_neighbors(self, router: Router, routers: List[Router], 
+                         links: List[Link], x: int, y: int, z: int) -> None:
+        """Connect router to its neighbors with enhanced fault modeling."""
+        directions = [
+            ('east', (1, 0, 0)), ('south', (0, 1, 0)), ('down', (0, 0, 1))
+        ]
+        
+        for direction, (dx, dy, dz) in directions:
+            if self._is_valid_position(x + dx, y + dy, z + dz):
+                neighbor_idx = self._get_router_index(x + dx, y + dy, z + dz)
+                
+                # Model link reliability based on distance
+                distance_factor = np.sqrt(dx*dx + dy*dy + dz*dz)
+                fault_prob = self.fault_probability * distance_factor
+                
+                if random.random() > fault_prob:
+                    bandwidth = 1.0 / distance_factor  # Bandwidth decreases with distance
+                    link = Link(len(links), self.link_latency, bandwidth)
+                    
+                    # Set bidirectional connections
+                    opposite_direction = self._get_opposite_direction(direction)
+                    router.ports[direction] = link
+                    routers[neighbor_idx].ports[opposite_direction] = link
+                    links.append(link)
+    
+    def _is_valid_position(self, x: int, y: int, z: int) -> bool:
+        """Check if position is within topology bounds."""
+        return (0 <= x < self.num_rows and 
+                0 <= y < self.num_cols and 
+                0 <= z < self.num_layers)
+    
+    @staticmethod
+    def _get_opposite_direction(direction: str) -> str:
+        """Get opposite direction for bidirectional connections."""
+        opposites = {'east': 'west', 'west': 'east',
+                    'north': 'south', 'south': 'north',
+                    'up': 'down', 'down': 'up'}
+        return opposites[direction]
+    
+    def find_backup_route(self, src_router: Router, dst_router: Router, 
+                         max_hops: int = 20) -> List[Router]:
+        """Enhanced routing algorithm with congestion awareness."""
+        queue = deque([(src_router, [src_router])])
         visited = set()
-
+        
         while queue:
-            current_router = queue.popleft()
+            current_router, path = queue.popleft()
+            if len(path) > max_hops:
+                continue
+                
             if current_router.router_id == dst_router.router_id:
-                return True  # Path found
-
+                return path
+                
             visited.add(current_router.router_id)
+            
+            # Check all available directions with congestion awareness
+            for direction, link in current_router.ports.items():
+                if not link or link.failed:
+                    continue
+                    
+                next_router_id = self._get_next_router_id(current_router.router_id, direction)
+                if next_router_id not in visited and link.can_transmit(packet_size=1):
+                    next_router = routers[next_router_id]
+                    new_path = path + [next_router]
+                    queue.append((next_router, new_path))
+        
+        return []  # No path found
 
-            # Check available directions (if port and link are not failed)
-            if current_router.east_port and not current_router.east_port.failed and (current_router.router_id + 1) not in visited:
-                queue.append(routers[current_router.router_id + 1])
+    def simulate_network(self, num_cycles: int, packet_injection_rate: float = 0.1):
+        """Simulate network behavior over time."""
+        stats = {
+            'latency': [],
+            'throughput': [],
+            'dropped_packets': 0,
+            'power_consumption': []
+        }
+        
+        for _ in range(num_cycles):
+            self.clock_cycle += 1
+            
+            # Generate new packets based on injection rate
+            if random.random() < packet_injection_rate:
+                source = random.choice(routers)
+                dest = random.choice(routers)
+                packet = Packet(source.router_id, dest.router_id, 
+                              self.clock_cycle, random.randint(1, 10))
+                
+                # Try to send packet
+                route = self.find_backup_route(source, dest)
+                if route:
+                    self.total_packets_sent += 1
+                    # Simulate packet traversal
+                    for router in route:
+                        if not router.process_packet(packet):
+                            stats['dropped_packets'] += 1
+                            break
+                
+            # Update thermal and power models
+            total_power = 0
+            for router in routers:
+                neighboring_temps = [
+                    routers[i].temperature for i in self._get_neighbor_indices(router.router_id)
+                ]
+                router.update_thermal_model(25.0, neighboring_temps)
+                total_power += router.power_consumption
+                
+            stats['power_consumption'].append(total_power)
+            
+        return stats
 
-            if current_router.west_port and not current_router.west_port.failed and (current_router.router_id - 1) not in visited:
-                queue.append(routers[current_router.router_id - 1])
-
-            if current_router.south_port and not current_router.south_port.failed and (current_router.router_id + self.num_rows) not in visited:
-                queue.append(routers[current_router.router_id + self.num_rows])
-
-            if current_router.north_port and not current_router.north_port.failed and (current_router.router_id - self.num_rows) not in visited:
-                queue.append(routers[current_router.router_id - self.num_rows])
-
-            if current_router.up_port and not current_router.up_port.failed and (current_router.router_id + self.num_rows * self.num_cols) not in visited:
-                queue.append(routers[current_router.router_id + self.num_rows * self.num_cols])
-
-            if current_router.down_port and not current_router.down_port.failed and (current_router.router_id - self.num_rows * self.num_cols) not in visited:
-                queue.append(routers[current_router.router_id - self.num_rows * self.num_cols])
-
-        return False  # No path found
-
-# Simulation parameters for a 3x3x3 3D mesh topology
-num_rows = 3  # Number of rows in X direction
-num_cols = 3  # Number of columns in Y direction
-num_layers = 3  # Number of layers in Z direction
-link_latency = 1
-router_latency = 1
-fault_probability = 0.1  # 10% chance of link failure
-
-# Create the wafer-scale 3D mesh topology
-topology = Wafer3DMeshTopology(num_rows, num_cols, num_layers, link_latency, router_latency, fault_probability)
-routers, links = topology.createTopology()
-
-# Testing fault-tolerant route finding
-source_router = routers[0]  # Start from Router 0
-destination_router = routers[10]  # Try to reach Router 10
-
-if topology.find_backup_route(source_router, destination_router):
-    print(f"Backup route found from Router {source_router.router_id} to Router {destination_router.router_id}")
-else:
-    print(f"No route found from Router {source_router.router_id} to Router {destination_router.router_id}")
+# Test the enhanced simulation
+if __name__ == "__main__":
+    # Initialize topology
+    topology = Wafer3DMeshTopology(3, 3, 3, 1, 1, 0.1)
+    routers, links = topology.createTopology()
+    
+    # Run simulation
+    stats = topology.simulate_network(1000, 0.1)
+    
+    # Print results
+    print(f"Simulation Results:")
+    print(f"Total packets sent: {topology.total_packets_sent}")
+    print(f"Packets dropped: {stats['dropped_packets']}")
+    print(f"Average power consumption: {np.mean(stats['power_consumption']):.2f} W")
