@@ -1,3 +1,5 @@
+# run_simulation.py
+
 from modified_noc_simulation import Wafer3DMeshTopology
 import matplotlib.pyplot as plt
 
