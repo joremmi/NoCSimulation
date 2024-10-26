@@ -1,4 +1,5 @@
 import random
+from collections import deque
 
 # Define a router class to simulate processing units in wafer-scale NoC
 class Router:
@@ -11,14 +12,16 @@ class Router:
         self.south_port = None
         self.up_port = None
         self.down_port = None
+        self.failed = False  # Flag to indicate if the router has failed
 
 # Define a simple link class to simulate links between routers
 class Link:
     def __init__(self, link_id, latency=1):
         self.link_id = link_id
         self.latency = latency
+        self.failed = False  # Flag to indicate if the link has failed
 
-# Define the 3D mesh topology
+# Define the 3D mesh topology with fault tolerance
 class Wafer3DMeshTopology:
     def __init__(self, num_rows, num_cols, num_layers, link_latency, router_latency, fault_probability=0.1):
         self.num_rows = num_rows  # Number of rows in X direction
@@ -75,6 +78,39 @@ class Wafer3DMeshTopology:
 
         return routers, links
 
+    def find_backup_route(self, src_router, dst_router):
+        """Implements a simple Breadth-First Search (BFS) to find a backup route."""
+        queue = deque([src_router])
+        visited = set()
+
+        while queue:
+            current_router = queue.popleft()
+            if current_router.router_id == dst_router.router_id:
+                return True  # Path found
+
+            visited.add(current_router.router_id)
+
+            # Check available directions (if port and link are not failed)
+            if current_router.east_port and not current_router.east_port.failed and (current_router.router_id + 1) not in visited:
+                queue.append(routers[current_router.router_id + 1])
+
+            if current_router.west_port and not current_router.west_port.failed and (current_router.router_id - 1) not in visited:
+                queue.append(routers[current_router.router_id - 1])
+
+            if current_router.south_port and not current_router.south_port.failed and (current_router.router_id + self.num_rows) not in visited:
+                queue.append(routers[current_router.router_id + self.num_rows])
+
+            if current_router.north_port and not current_router.north_port.failed and (current_router.router_id - self.num_rows) not in visited:
+                queue.append(routers[current_router.router_id - self.num_rows])
+
+            if current_router.up_port and not current_router.up_port.failed and (current_router.router_id + self.num_rows * self.num_cols) not in visited:
+                queue.append(routers[current_router.router_id + self.num_rows * self.num_cols])
+
+            if current_router.down_port and not current_router.down_port.failed and (current_router.router_id - self.num_rows * self.num_cols) not in visited:
+                queue.append(routers[current_router.router_id - self.num_rows * self.num_cols])
+
+        return False  # No path found
+
 # Simulation parameters for a 3x3x3 3D mesh topology
 num_rows = 3  # Number of rows in X direction
 num_cols = 3  # Number of columns in Y direction
@@ -87,16 +123,11 @@ fault_probability = 0.1  # 10% chance of link failure
 topology = Wafer3DMeshTopology(num_rows, num_cols, num_layers, link_latency, router_latency, fault_probability)
 routers, links = topology.createTopology()
 
-# Simple function to print the created topology (for debugging)
-def print_topology(routers):
-    for router in routers:
-        print(f"Router {router.router_id}:")
-        print(f"  East Port: {'Connected' if router.east_port else 'None'}")
-        print(f"  West Port: {'Connected' if router.west_port else 'None'}")
-        print(f"  South Port: {'Connected' if router.south_port else 'None'}")
-        print(f"  North Port: {'Connected' if router.north_port else 'None'}")
-        print(f"  Up Port: {'Connected' if router.up_port else 'None'}")
-        print(f"  Down Port: {'Connected' if router.down_port else 'None'}")
+# Testing fault-tolerant route finding
+source_router = routers[0]  # Start from Router 0
+destination_router = routers[10]  # Try to reach Router 10
 
-# Print the created topology for verification
-print_topology(routers)
+if topology.find_backup_route(source_router, destination_router):
+    print(f"Backup route found from Router {source_router.router_id} to Router {destination_router.router_id}")
+else:
+    print(f"No route found from Router {source_router.router_id} to Router {destination_router.router_id}")
