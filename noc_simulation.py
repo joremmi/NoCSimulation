@@ -33,6 +33,10 @@ class Router:
         
     def update_thermal_model(self, ambient_temp: float, neighboring_temps: List[float]):
         """Update router temperature based on power consumption and neighboring temperatures."""
+        if not neighboring_temps:  # Handle case with no neighbors
+            self.temperature = ambient_temp
+            return
+            
         thermal_conductivity = 0.5
         self.temperature = (self.temperature + 
                           thermal_conductivity * (sum(neighboring_temps) / len(neighboring_temps) - self.temperature) +
@@ -74,32 +78,56 @@ class Wafer3DMeshTopology:
         self.clock_cycle = 0
         self.total_packets_sent = 0
         self.total_packets_dropped = 0
+        self.routers = []  # Store routers as class attribute
+        self.links = []    # Store links as class attribute
+        
+    def _get_neighbor_indices(self, router_id: int) -> List[int]:
+        """Get indices of neighboring routers."""
+        z = router_id // (self.num_rows * self.num_cols)
+        remaining = router_id % (self.num_rows * self.num_cols)
+        y = remaining // self.num_rows
+        x = remaining % self.num_rows
+        
+        neighbors = []
+        # Check all possible neighbors (east, west, north, south, up, down)
+        directions = [
+            (1, 0, 0), (-1, 0, 0),  # east, west
+            (0, 1, 0), (0, -1, 0),  # south, north
+            (0, 0, 1), (0, 0, -1)   # down, up
+        ]
+        
+        for dx, dy, dz in directions:
+            new_x, new_y, new_z = x + dx, y + dy, z + dz
+            if self._is_valid_position(new_x, new_y, new_z):
+                neighbor_id = self._get_router_index(new_x, new_y, new_z)
+                neighbors.append(neighbor_id)
+                
+        return neighbors
         
     def createTopology(self) -> tuple[List[Router], List[Link]]:
         """Create topology with enhanced fault injection and monitoring."""
         total_routers = self.num_rows * self.num_cols * self.num_layers
-        routers = [Router(router_id=i, latency=self.router_latency) 
-                  for i in range(total_routers)]
-        links = []
+        self.routers = [Router(router_id=i, latency=self.router_latency) 
+                       for i in range(total_routers)]
+        self.links = []
         
         # Create mesh connections with realistic fault modeling
         for z in range(self.num_layers):
             for y in range(self.num_cols):
                 for x in range(self.num_rows):
                     idx = self._get_router_index(x, y, z)
-                    router = routers[idx]
+                    router = self.routers[idx]
                     
                     # Connect neighbors with variable bandwidth based on distance
-                    self._connect_neighbors(router, routers, links, x, y, z)
+                    self._connect_neighbors(router, x, y, z)
                     
-        return routers, links
+        return self.routers, self.links
     
     def _get_router_index(self, x: int, y: int, z: int) -> int:
         """Calculate router index from coordinates."""
         return z * (self.num_rows * self.num_cols) + y * self.num_rows + x
     
-    def _connect_neighbors(self, router: Router, routers: List[Router], 
-                         links: List[Link], x: int, y: int, z: int) -> None:
+    def _connect_neighbors(self, router: Router, x: int, y: int, z: int) -> None:
         """Connect router to its neighbors with enhanced fault modeling."""
         directions = [
             ('east', (1, 0, 0)), ('south', (0, 1, 0)), ('down', (0, 0, 1))
@@ -115,13 +143,13 @@ class Wafer3DMeshTopology:
                 
                 if random.random() > fault_prob:
                     bandwidth = 1.0 / distance_factor  # Bandwidth decreases with distance
-                    link = Link(len(links), self.link_latency, bandwidth)
+                    link = Link(len(self.links), self.link_latency, bandwidth)
                     
                     # Set bidirectional connections
                     opposite_direction = self._get_opposite_direction(direction)
                     router.ports[direction] = link
-                    routers[neighbor_idx].ports[opposite_direction] = link
-                    links.append(link)
+                    self.routers[neighbor_idx].ports[opposite_direction] = link
+                    self.links.append(link)
     
     def _is_valid_position(self, x: int, y: int, z: int) -> bool:
         """Check if position is within topology bounds."""
@@ -159,12 +187,38 @@ class Wafer3DMeshTopology:
                     continue
                     
                 next_router_id = self._get_next_router_id(current_router.router_id, direction)
-                if next_router_id not in visited and link.can_transmit(packet_size=1):
-                    next_router = routers[next_router_id]
+                if next_router_id is not None and next_router_id not in visited and link.can_transmit(packet_size=1):
+                    next_router = self.routers[next_router_id]
                     new_path = path + [next_router]
                     queue.append((next_router, new_path))
         
         return []  # No path found
+
+    def _get_next_router_id(self, current_id: int, direction: str) -> Optional[int]:
+        """Get the ID of the next router in the given direction."""
+        z = current_id // (self.num_rows * self.num_cols)
+        remaining = current_id % (self.num_rows * self.num_cols)
+        y = remaining // self.num_rows
+        x = remaining % self.num_rows
+        
+        direction_offsets = {
+            'east': (1, 0, 0),
+            'west': (-1, 0, 0),
+            'north': (0, -1, 0),
+            'south': (0, 1, 0),
+            'up': (0, 0, -1),
+            'down': (0, 0, 1)
+        }
+        
+        if direction not in direction_offsets:
+            return None
+            
+        dx, dy, dz = direction_offsets[direction]
+        new_x, new_y, new_z = x + dx, y + dy, z + dz
+        
+        if self._is_valid_position(new_x, new_y, new_z):
+            return self._get_router_index(new_x, new_y, new_z)
+        return None
 
     def simulate_network(self, num_cycles: int, packet_injection_rate: float = 0.1):
         """Simulate network behavior over time."""
@@ -180,26 +234,27 @@ class Wafer3DMeshTopology:
             
             # Generate new packets based on injection rate
             if random.random() < packet_injection_rate:
-                source = random.choice(routers)
-                dest = random.choice(routers)
-                packet = Packet(source.router_id, dest.router_id, 
-                              self.clock_cycle, random.randint(1, 10))
-                
-                # Try to send packet
-                route = self.find_backup_route(source, dest)
-                if route:
-                    self.total_packets_sent += 1
-                    # Simulate packet traversal
-                    for router in route:
-                        if not router.process_packet(packet):
-                            stats['dropped_packets'] += 1
-                            break
+                source = random.choice(self.routers)
+                dest = random.choice(self.routers)
+                if source.router_id != dest.router_id:  # Avoid sending to self
+                    packet = Packet(source.router_id, dest.router_id, 
+                                  self.clock_cycle, random.randint(1, 10))
+                    
+                    # Try to send packet
+                    route = self.find_backup_route(source, dest)
+                    if route:
+                        self.total_packets_sent += 1
+                        # Simulate packet traversal
+                        for router in route:
+                            if not router.process_packet(packet):
+                                stats['dropped_packets'] += 1
+                                break
                 
             # Update thermal and power models
             total_power = 0
-            for router in routers:
+            for router in self.routers:
                 neighboring_temps = [
-                    routers[i].temperature for i in self._get_neighbor_indices(router.router_id)
+                    self.routers[i].temperature for i in self._get_neighbor_indices(router.router_id)
                 ]
                 router.update_thermal_model(25.0, neighboring_temps)
                 total_power += router.power_consumption
@@ -215,10 +270,11 @@ if __name__ == "__main__":
     routers, links = topology.createTopology()
     
     # Run simulation
+    print("Starting simulation...")
     stats = topology.simulate_network(1000, 0.1)
     
     # Print results
-    print(f"Simulation Results:")
+    print(f"\nSimulation Results:")
     print(f"Total packets sent: {topology.total_packets_sent}")
     print(f"Packets dropped: {stats['dropped_packets']}")
     print(f"Average power consumption: {np.mean(stats['power_consumption']):.2f} W")
