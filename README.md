@@ -62,10 +62,8 @@ The simulation outputs graphs for:
 - **Power Consumption**: Total power consumption of the network in Watts.
 
 Below is an example of the expected visual output:
+![sim](https://github.com/user-attachments/assets/b03f8c3e-f44d-4b4f-bac1-dae326328478)
 
-![Example Latency Plot](example_latency.png)
-![Example Throughput Plot](example_throughput.png)
-![Example Power Plot](example_power.png)
 
 ## Configuration Options
 
